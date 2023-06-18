@@ -17,6 +17,7 @@ TOOLPREFIX := $(shell if riscv64-unknown-elf-objdump -i 2>&1 | grep 'elf64-big' 
 	echo "***" 1>&2; exit 1; fi)
 endif
 U = user
+K = kernel
 QEMU = qemu-system-riscv64
 
 CC = $(TOOLPREFIX)gcc
@@ -41,18 +42,18 @@ CFLAGS += -fno-pie -nopie
 endif
 
 LDFLAGS = -z max-page-size=4096
-OBJS = entry.o start.o main.o kernelvec.o trampoline.o switch.o
-OBJS += kmem.o vm.o proc.o trap.o syscall.o string.o
-OBJS += printf.o 
-OBJS += uart.o 
+OBJS = $K/entry.o $K/start.o $K/main.o $K/kernelvec.o $K/trampoline.o $K/switch.o
+OBJS += $K/kmem.o $K/vm.o $K/proc.o $K/trap.o $K/syscall.o $K/string.o
+OBJS += $K/printf.o 
+OBJS += $K/uart.o 
 
-qemu: kernel 
+qemu: $K/kernel 
 	$(QEMU) $(QEMUOPTS)
 	
-kernel:  kernel.ld $(OBJS)
-	$(LD) $(LDFLAGS) -T kernel.ld -o $@ $(OBJS)
-	$(OBJDUMP) -S kernel > kernel.asm 
-	$(OBJDUMP) -t kernel | sed '1,/SYMBOL TABLE/d; s/ .* / /; /^$$/d' > kernel.sym
+$K/kernel:  $K/kernel.ld $(OBJS)
+	$(LD) $(LDFLAGS) -T $K/kernel.ld -o $@ $(OBJS)
+	$(OBJDUMP) -S $K/kernel > $K/kernel.asm 
+	$(OBJDUMP) -t $K/kernel | sed '1,/SYMBOL TABLE/d; s/ .* / /; /^$$/d' > $K/kernel.sym
 
 %.o: %.S
 	$(CC) -c -o $@ $<
@@ -67,9 +68,10 @@ $U/initcode: $U/initcode.S
 	$(OBJDUMP) -S $U/initcode.o > $U/initcode.asm
 
 clean: 
-	rm -f *.tex *.dvi *.idx *.aux *.log *.ind *.ilg \
-	*.o *.d *.asm */*.sym \
-	$U/initcode $U/initcode.out kernel fs.img \
+	rm -f $K/*.tex $K/*.dvi $K/*.idx $K/*.aux $K/*.log $K/*.ind $K/*.ilg \
+	$K/*.o $K/*.d $K/*.asm $K/*.sym \
+	$U/*.d $U/*.o $U/*.asm
+	$U/initcode $U/initcode.out $K/kernel fs.img \
 	mkfs/mkfs .gdbinit \
     kernel.sym  usys.S \
 	$(UPROGS)
@@ -84,7 +86,7 @@ ifndef CPUS
 CPUS := 1
 endif
 
-QEMUOPTS = -machine virt -bios none -kernel kernel -m 128M -smp $(CPUS) -nographic
+QEMUOPTS = -machine virt -bios none -kernel $K/kernel -m 128M -smp $(CPUS) -nographic
 QEMUOPTS += -global virtio-mmio.force-legacy=false
 
 
@@ -92,7 +94,7 @@ QEMUOPTS += -global virtio-mmio.force-legacy=false
 .gdbinit: .gdbinit.tmpl-riscv
 	sed "s/:1234/:$(GDBPORT)/" < $^ > $@
 
-qemu-gdb: kernel .gdbinit
+qemu-gdb: $K/kernel .gdbinit
 	@echo "*** Now run 'gdb' in another window." 1>&2
 	$(QEMU) $(QEMUOPTS) -S $(QEMUGDB)
 

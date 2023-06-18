@@ -70,7 +70,7 @@ $U/initcode: $U/initcode.S
 clean: 
 	rm -f $K/*.tex $K/*.dvi $K/*.idx $K/*.aux $K/*.log $K/*.ind $K/*.ilg \
 	$K/*.o $K/*.d $K/*.asm $K/*.sym \
-	$U/*.d $U/*.o $U/*.asm
+	$U/*.d $U/*.o $U/*.asm \
 	$U/initcode $U/initcode.out $K/kernel fs.img \
 	mkfs/mkfs .gdbinit \
     kernel.sym  usys.S \

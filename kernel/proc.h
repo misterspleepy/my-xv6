@@ -65,12 +65,14 @@ enum procstate {
     RUNNING,
     RUNNABLE,
     SPLEEPPING,
+    ZOMBIE,
     UNUSED
 };
 
 struct proc {
     enum procstate status;
     uint64 pid;
+    uint64 xstatus;
 
     // these are private to the process, so p->lock need not be held.
     uint64 kstack;               // Virtual address of kernel stack
@@ -101,5 +103,5 @@ struct proc* myproc();
 void userinit();
 void procinit();
 void scheduler();
-
+void exit(int);
 #endif

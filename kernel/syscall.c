@@ -65,14 +65,14 @@ int argstr(int n, char* buf, int max)
 
 uint64 sys_exit(void)
 {
-  char buf[100] = "buf\n";
-  argstr(0, buf, 100);
-  printf(buf);
-  return 0;  // not reached
+    int xstatus = -1;
+    argint(0, &xstatus);
+    exit(xstatus);
+    return 0;
 }
 
 uint64 (*systemcalls[])() = {
-[SYS_exit]   sys_exit
+[SYS_test]   sys_exit
 };
 
 void syscall()

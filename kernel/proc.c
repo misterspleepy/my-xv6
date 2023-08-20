@@ -6,9 +6,19 @@
 #include "kmem.h"
 #include "types.h"
 #include "string.h"
+#include "stat.h"
+#include "defs.h"
+
 struct proc procs[N_PROC];
 struct cpu cpus[N_CPU];
+struct proc *initproc;
 extern char trampoline[];
+
+// helps ensure that wakeups of wait()ing
+// parents are not lost. helps obey the
+// memory model when using p->parent.
+// must be acquired before any p->lock.
+struct spinlock wait_lock;
 
 struct cpu* mycpu()
 {
@@ -30,34 +40,56 @@ void procinit()
 {
     for (int i = 0; i < N_PROC; i++) {
         procs[i].status = UNUSED;
+        initlock(&procs[i].lock, "proc");
     }
 }
 
 void scheduler()
 {
-    int i = 0;
+    mycpu()->proc = 0;
     while(1) {
-        i++;
-        i %= N_PROC;
-        if (procs[i].status != RUNNABLE) {
-            continue;
+        intr_on();
+        for (int i = 0; i < N_PROC; i++) {
+            acquire(&procs[i].lock);
+            if (procs[i].status != RUNNABLE) {
+                release(&procs[i].lock);
+                continue;
+            }
+            procs[i].status = RUNNING;
+            mycpu()->proc = &procs[i];
+            int intena = mycpu()->intena;
+            int noff = mycpu()->noff;
+            swtch(&cpus[cpuid()].con, &procs[i].context);
+            mycpu()->noff = noff;
+            mycpu()->intena = intena;
+            mycpu()->proc = 0;
+            release(&procs[i].lock);
         }
-        procs[i].status = RUNNING;
-        mycpu()->proc = &procs[i];
-        swtch(&cpus[cpuid()].con, &procs[i].context);
-        mycpu()->proc = 0;
     }
 }
 
-unsigned char initcode[] = {0x17, 0x05, 0x00, 0x00, 0x13, 0x05, 0x45, 0x02, 0x93, 0x08, 0x00, 0x00, 0x73, 0x00, 0x00, 0x00
-, 0xb7, 0x74, 0xc2, 0x48, 0x9b, 0x84, 0x54, 0x39, 0x93, 0x94, 0xd4, 0x00, 0x63, 0x10, 0x90, 0x00
-, 0xef, 0xf0, 0x1f, 0xfe, 0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x20, 0x75, 0x73, 0x65, 0x72, 0x0a, 0x00
-, 0x00, 0x00, 0x00, 0x00
+// a user program that calls exec("/init")
+// assembled from ../user/initcode.S
+// od -t xC ../user/initcode
+uchar initcode[] = {
+  0x17, 0x05, 0x00, 0x00, 0x13, 0x05, 0x45, 0x02,
+  0x97, 0x05, 0x00, 0x00, 0x93, 0x85, 0x35, 0x02,
+  0x93, 0x08, 0x70, 0x00, 0x73, 0x00, 0x00, 0x00,
+  0x93, 0x08, 0x20, 0x00, 0x73, 0x00, 0x00, 0x00,
+  0xef, 0xf0, 0x9f, 0xff, 0x2f, 0x69, 0x6e, 0x69,
+  0x74, 0x00, 0x00, 0x24, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00
 };
 
 void usertrapret();
+static int first = 1;
 void forkret()
 {
+    release(&myproc()->lock);
+    if (first) {
+        first = 0;
+        fsinit(ROOTDEV);
+    }
     usertrapret();
 }
 
@@ -79,12 +111,11 @@ pagetable_t proc_pagetable(struct proc* proc)
     return ptl;
 }
 
-void proc_freepagetable(struct proc* proc)
+void proc_freepagetable(pagetable_t pgtl, uint64 sz)
 {
-    uvmunmap(proc->pagetable, TRAMPOLINE, 1, 0);
-    uvmunmap(proc->pagetable, TRAPFRAME, 1, 0);
-    uvmfree(proc->pagetable, proc->sz);
-
+    uvmunmap(pgtl, TRAMPOLINE, 1, 0);
+    uvmunmap(pgtl, TRAPFRAME, 1, 0);
+    uvmfree(pgtl, sz);
 }
 
 int growproc(int n)
@@ -106,21 +137,26 @@ int growproc(int n)
     p->sz = newsz;
     return 0;
 }
-
+void freeproc(struct proc* p);
 struct proc* allocproc()
 {
     struct proc* p = 0;
     void* frame;
     for (int i = 0; i < N_PROC; i++) {
         p = &procs[i];
+        acquire(&p->lock);
         if (p->status == UNUSED) {
             goto FOUND;
+        } else {
+            release(&p->lock);
         }
     }
     return 0;
 FOUND:
     frame = kalloc();
     if (!frame) {
+        freeproc(p);
+        release(&p->lock);
         return 0;
     }
     p->status = USED;
@@ -132,6 +168,11 @@ FOUND:
 
     // An empty user page table
     p->pagetable = proc_pagetable(p);
+    if (p->pagetable == 0) {
+        freeproc(p);
+        release(&p->lock);
+        return 0;
+    }
     memset((char*)&p->context, 0, sizeof(p->context));
     p->context.ra = (uint64)forkret;
     p->context.sp = p->kstack + PGSIZE;
@@ -153,6 +194,7 @@ void userinit()
 {
     struct proc* p;
     p = allocproc();
+    initproc = p;
     if (p == 0) {
         panic("userinit\n");
     }
@@ -161,7 +203,58 @@ void userinit()
 
     p->trapframe->epc = 0;
     p->trapframe->sp = PGSIZE;
+    safestrcpy(p->name, "initcode", sizeof(p->name));
+    p->cwd = namei("/");
     p->status = RUNNABLE;
+    release(&p->lock);
+}
+
+int fork()
+{
+    int i, pid;
+    struct proc* np;
+    struct proc* p = myproc();
+    
+    // Allocate process.
+    if ((np = allocproc()) == 0) {
+        return -1;
+    }
+
+    // Copy user memory from parent to child.
+    if (uvmcopy(p->pagetable, np->pagetable, p->sz) < 0) {
+        freeproc(np);
+        release(&np->lock);
+        return -1;
+    }
+    np->sz = p->sz;
+
+    // Copy saved user register
+    *(np->trapframe) = *(p->trapframe);
+
+    // Cause fork to return 0 in the child.
+    np->trapframe->a0 = 0;
+
+    // increment reference counts on open file descriptors
+    for (i =0; i < NOFILE; i++) {
+        if (p->ofile[i]) {
+            np->ofile[i] = filedup(p->ofile[i]);
+        }
+    }
+    np->cwd = idup(p->cwd);
+
+    safestrcpy(np->name, p->name, sizeof(p->name));
+    pid = np->pid;
+    release(&np->lock);
+
+    acquire(&wait_lock);
+    np->parent = p;
+    release(&wait_lock);
+
+    acquire(&np->lock);
+    np->status = RUNNABLE;
+    release(&np->lock);
+
+    return pid;
 }
 
 void sched()
@@ -170,22 +263,221 @@ void sched()
     if (p->status == RUNNING) {
         panic("sched\n");
     }
+    int noff = mycpu()->noff;
+    int intena = mycpu()->intena;
     swtch(&myproc()->context, &mycpu()->con);
+    mycpu()->intena = intena;
+    mycpu()->noff = noff;
 }
 
 void yield()
 {
+    acquire(&myproc()->lock);
     myproc()->status = RUNNABLE;
     sched();
+    release(&myproc()->lock);
+}
+
+void freeproc(struct proc* p)
+{
+    if (p->trapframe) {
+        kfree(p->trapframe);
+    }
+    if (p->pagetable) {
+        proc_freepagetable(p->pagetable, p->sz);
+    }
+    p->status = UNUSED;
+    p->xstatus = 0;
+    p->sz = 0;
+    p->pid = 0;
+    p->pagetable = 0;
+    p->trapframe = 0;
+    p->killed = 0;
+}
+
+// Pass p's abandoned children to init.
+// Caller must hold wait_lock.
+void reparent(struct proc *p)
+{
+  struct proc *pp;
+
+  for(pp = procs; pp < &procs[N_PROC]; pp++){
+    if(pp->parent == p){
+      pp->parent = initproc;
+      wakeup(initproc);
+    }
+  }
 }
 
 void exit(int xstatus)
 {
     // free proc
     struct proc* p = myproc();
+    if(p == initproc) {
+        panic("init exiting");
+    }
+
+    // Close all open files.
+    for(int fd = 0; fd < NOFILE; fd++){
+        if(p->ofile[fd]){
+        struct file *f = p->ofile[fd];
+        fileclose(f);
+        p->ofile[fd] = 0;
+        }
+    }
+    iput(p->cwd);
+    p->cwd = 0;
+
+    acquire(&wait_lock);
+    // Give any children to init.
+    reparent(p);
+
+    // Parent might be sleeping in wait().
+    wakeup(p->parent);
+
+    acquire(&p->lock);
     p->status = ZOMBIE;
     p->xstatus = xstatus;
-    proc_freepagetable(p);
-    kfree((void*)p->trapframe);
+    release(&wait_lock);
     sched();
+    panic("zombie exit");
+}
+
+int setkilled(struct proc* p)
+{
+    p->killed = 1;
+    return 0;
+}
+
+int killed(struct proc* p)
+{
+    return p->killed;
+}
+
+int kill(uint64 pid)
+{
+    struct proc* p;
+    for (int i = 0; i < N_PROC; i++) {
+        p = &procs[i];
+        if (p->pid == pid) {
+            // wakeup 之后应该立马判断是否被killed，是则退出进程
+            // killed 的判断时机，进程中断函数
+            acquire(&p->lock);
+            if (p->status == SLEEPING) {
+                p->status = RUNNABLE;
+            }
+            p->killed = 1;
+            release(&p->lock);
+            return 0;
+        }
+    }
+    return -1;
+}
+
+// Wait for a child process to exit and return its pid.
+// Return -1 if this process has no children.
+int wait(uint64 addr)
+{
+  struct proc *pp;
+  int havekids, pid;
+  struct proc *p = myproc();
+
+  acquire(&wait_lock);
+
+  for(;;){
+    // Scan through table looking for exited children.
+    havekids = 0;
+    for(pp = procs; pp < &procs[N_PROC]; pp++){
+      if(pp->parent == p){
+        // make sure the child isn't still in exit() or swtch().
+        acquire(&pp->lock);
+
+        havekids = 1;
+        if(pp->status == ZOMBIE){
+          // Found one.
+          pid = pp->pid;
+          if(addr != 0 && copyout(p->pagetable, addr, (char *)&pp->xstatus,
+                                  sizeof(pp->xstatus)) < 0) {
+            release(&pp->lock);
+            release(&wait_lock);
+            return -1;
+          }
+          freeproc(pp);
+          release(&pp->lock);
+          release(&wait_lock);
+          return pid;
+        }
+        release(&pp->lock);
+      }
+    }
+
+    // No point waiting if we don't have any children.
+    if(!havekids || killed(p)){
+      release(&wait_lock);
+      return -1;
+    }
+    
+    // Wait for a child to exit.
+    sleep(p, &wait_lock);  //DOC: wait-sleep
+  }
+}
+
+void sleep(void* chan, struct spinlock* lk)
+{
+    struct proc *p = myproc();
+    acquire(&p->lock);
+    p->chan = chan;
+    p->status = SLEEPING;
+    if (lk && !holding(lk)) {
+        panic("sleep\n");
+    }
+    if (lk) {
+        release(lk);
+    }
+
+    sched();
+    if (lk) {
+        acquire(lk);
+    }
+    p->chan = 0;
+    release(&p->lock);
+}
+
+void wakeup(void* chan)
+{
+    struct proc *p;
+    for (p = procs; p < &procs[N_PROC]; p++) {
+        if (p != myproc()) {
+            acquire(&p->lock);
+            if (p->status == SLEEPING && p->chan == chan) {
+                p->status = RUNNABLE;
+            }
+            release(&p->lock);
+        } 
+    }
+}
+
+int either_copyout(int user_dst, uint64 dst, void *src, uint64 len)
+{
+  struct proc *p = myproc();
+  if(user_dst){
+    return copyout(p->pagetable, dst, src, len);
+  } else {
+    memmove((char *)dst, src, len);
+    return 0;
+  }
+}
+
+// Copy from either a user address, or kernel address,
+// depending on usr_src.
+// Returns 0 on success, -1 on error.
+int either_copyin(void *dst, int user_src, uint64 src, uint64 len)
+{
+  struct proc *p = myproc();
+  if(user_src){
+    return copyin(p->pagetable, dst, src, len);
+  } else {
+    memmove(dst, (char*)src, len);
+    return 0;
+  }
 }

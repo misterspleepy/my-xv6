@@ -1,9 +1,15 @@
 //
 // low-level driver routines for 16550a UART.
 //
-typedef unsigned long uint64;
-#define UART0 0x10000000L
-#define UART0_IRQ 10
+
+#include "types.h"
+#include "param.h"
+#include "memlayout.h"
+#include "riscv.h"
+#include "spinlock.h"
+#include "proc.h"
+#include "defs.h"
+
 // the UART control registers are memory-mapped
 // at address UART0. this macro returns the
 // address of one of the registers.
@@ -32,6 +38,8 @@ typedef unsigned long uint64;
 #define ReadReg(reg) (*(Reg(reg)))
 #define WriteReg(reg, v) (*(Reg(reg)) = (v))
 
+// the transmit output buffer.
+struct spinlock uart_tx_lock;
 #define UART_TX_BUF_SIZE 32
 char uart_tx_buf[UART_TX_BUF_SIZE];
 uint64 uart_tx_w; // write next to uart_tx_buf[uart_tx_w % UART_TX_BUF_SIZE]
@@ -64,8 +72,35 @@ uartinit(void)
   WriteReg(FCR, FCR_FIFO_ENABLE | FCR_FIFO_CLEAR);
 
   // enable transmit and receive interrupts.
-  //WriteReg(IER, IER_TX_ENABLE | IER_RX_ENABLE);
+  WriteReg(IER, IER_TX_ENABLE | IER_RX_ENABLE);
 
+  initlock(&uart_tx_lock, "uart");
+}
+
+// add a character to the output buffer and tell the
+// UART to start sending if it isn't already.
+// blocks if the output buffer is full.
+// because it may block, it can't be called
+// from interrupts; it's only suitable for use
+// by write().
+void
+uartputc(int c)
+{
+  acquire(&uart_tx_lock);
+
+  if(panicked){
+    for(;;)
+      ;
+  }
+  while(uart_tx_w == uart_tx_r + UART_TX_BUF_SIZE){
+    // buffer is full.
+    // wait for uartstart() to open up space in the buffer.
+    sleep(&uart_tx_r, &uart_tx_lock);
+  }
+  uart_tx_buf[uart_tx_w % UART_TX_BUF_SIZE] = c;
+  uart_tx_w += 1;
+  uartstart();
+  release(&uart_tx_lock);
 }
 
 
@@ -76,10 +111,49 @@ uartinit(void)
 void
 uartputc_sync(int c)
 {
+  push_off();
+
+  if(panicked){
+    for(;;)
+      ;
+  }
+
   // wait for Transmit Holding Empty to be set in LSR.
   while((ReadReg(LSR) & LSR_TX_IDLE) == 0)
     ;
   WriteReg(THR, c);
+
+  pop_off();
+}
+
+// if the UART is idle, and a character is waiting
+// in the transmit buffer, send it.
+// caller must hold uart_tx_lock.
+// called from both the top- and bottom-half.
+void
+uartstart()
+{
+  while(1){
+    if(uart_tx_w == uart_tx_r){
+      // transmit buffer is empty.
+      return;
+    }
+    
+    if((ReadReg(LSR) & LSR_TX_IDLE) == 0){
+      // the UART transmit holding register is full,
+      // so we cannot give it another byte.
+      // it will interrupt when it's ready for a new byte.
+      return;
+    }
+    
+    int c = uart_tx_buf[uart_tx_r % UART_TX_BUF_SIZE];
+    uart_tx_r += 1;
+    
+    // maybe uartputc() is waiting for space in the buffer.
+    wakeup(&uart_tx_r);
+    
+    WriteReg(THR, c);
+  }
 }
 
 // read one input character from the UART.
@@ -93,4 +167,24 @@ uartgetc(void)
   } else {
     return -1;
   }
+}
+
+// handle a uart interrupt, raised because input has
+// arrived, or the uart is ready for more output, or
+// both. called from devintr().
+void
+uartintr(void)
+{
+  // read and process incoming characters.
+  while(1){
+    int c = uartgetc();
+    if(c == -1)
+      break;
+    consoleintr(c);
+  }
+
+  // send buffered characters.
+  acquire(&uart_tx_lock);
+  uartstart();
+  release(&uart_tx_lock);
 }

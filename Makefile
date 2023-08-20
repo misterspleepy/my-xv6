@@ -44,12 +44,58 @@ endif
 LDFLAGS = -z max-page-size=4096
 OBJS = $K/entry.o $K/start.o $K/main.o $K/kernelvec.o $K/trampoline.o $K/switch.o
 OBJS += $K/kmem.o $K/vm.o $K/proc.o $K/trap.o $K/syscall.o $K/string.o
-OBJS += $K/printf.o 
-OBJS += $K/uart.o 
+OBJS += $K/printf.o $K/sleeplock.o $K/spinlock.o $K/bio.o $K/virtio_disk.o
+OBJS += $K/fs.o $K/file.o $K/exec.o $K/console.o $K/pipe.o
+OBJS += $K/uart.o $K/plic.o
 
-qemu: $K/kernel 
+qemu: $K/kernel fs.img
 	$(QEMU) $(QEMUOPTS)
-	
+
+ULIB = $U/ulib.o $U/usys.o $U/printf.o $U/umalloc.o
+
+_%: %.o $(ULIB)
+	$(LD) $(LDFLAGS) -T $U/user.ld -o $@ $^
+	$(OBJDUMP) -S $@ > $*.asm
+	$(OBJDUMP) -t $@ | sed '1,/SYMBOL TABLE/d; s/ .* / /; /^$$/d' > $*.sym
+
+$U/usys.S : $U/usys.pl
+	perl $U/usys.pl > $U/usys.S
+
+$U/usys.o : $U/usys.S
+	$(CC) $(CFLAGS) -c -o $U/usys.o $U/usys.S
+
+$U/_forktest: $U/forktest.o $(ULIB)
+	# forktest has less library code linked in - needs to be small
+	# in order to be able to max out the proc table.
+	$(LD) $(LDFLAGS) -N -e main -Ttext 0 -o $U/_forktest $U/forktest.o $U/ulib.o $U/usys.o
+	$(OBJDUMP) -S $U/_forktest > $U/forktest.asm
+
+UPROGS=\
+	$U/_cat\
+	$U/_echo\
+	$U/_forktest\
+	$U/_grep\
+	$U/_init\
+	$U/_kill\
+	$U/_ln\
+	$U/_ls\
+	$U/_mkdir\
+	$U/_rm\
+	$U/_sh\
+	$U/_stressfs\
+	$U/_usertests\
+	$U/_grind\
+	$U/_wc\
+	$U/_zombie\
+
+
+fs.img: mkfs/mkfs README $(UPROGS)
+	mkfs/mkfs fs.img README $(UPROGS)
+-include kernel/*.d user/*.d
+
+mkfs/mkfs: mkfs/mkfs.c $K/fs.h
+	gcc -Werror -Wall -I. -o mkfs/mkfs mkfs/mkfs.c
+
 $K/kernel:  $K/kernel.ld $(OBJS)
 	$(LD) $(LDFLAGS) -T $K/kernel.ld -o $@ $(OBJS)
 	$(OBJDUMP) -S $K/kernel > $K/kernel.asm 
@@ -70,7 +116,7 @@ $U/initcode: $U/initcode.S
 clean: 
 	rm -f $K/*.tex $K/*.dvi $K/*.idx $K/*.aux $K/*.log $K/*.ind $K/*.ilg \
 	$K/*.o $K/*.d $K/*.asm $K/*.sym \
-	$U/*.d $U/*.o $U/*.asm \
+	$U/*.d $U/*.o $U/*.asm $U/*.sym \
 	$U/initcode $U/initcode.out $K/kernel fs.img \
 	mkfs/mkfs .gdbinit \
     kernel.sym  usys.S \
@@ -88,13 +134,14 @@ endif
 
 QEMUOPTS = -machine virt -bios none -kernel $K/kernel -m 128M -smp $(CPUS) -nographic
 QEMUOPTS += -global virtio-mmio.force-legacy=false
-
+QEMUOPTS += -drive file=fs.img,if=none,format=raw,id=x0
+QEMUOPTS += -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0
 
 
 .gdbinit: .gdbinit.tmpl-riscv
 	sed "s/:1234/:$(GDBPORT)/" < $^ > $@
 
-qemu-gdb: $K/kernel .gdbinit
+qemu-gdb: $K/kernel .gdbinit fs.img
 	@echo "*** Now run 'gdb' in another window." 1>&2
 	$(QEMU) $(QEMUOPTS) -S $(QEMUGDB)
 

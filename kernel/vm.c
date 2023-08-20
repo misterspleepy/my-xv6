@@ -57,6 +57,28 @@ int mappages(pagetable_t pagetable, uint64 va, uint64 sz, uint64 pa, int perm)
     return 0;
 }
 
+void pagetabledump(pagetable_t pt, int level)
+{
+    char buf[10];
+    uint64 child;
+    pte_t* pte;
+    int i = 0;
+    for (; i < level * 4; i++) {
+        buf[i] = ' ';
+    }
+    buf[i] = 0;
+    printf("%s%p\n", buf, pt);
+    for (int j = 0; j < PGSIZE / sizeof(pte_t); j++) {
+        pte = (pte_t*)pt + j;
+        if (*pte & PTE_V && ((*pte & (PTE_R | PTE_W | PTE_X)) == 0)) {
+            child = PTE2PA(*pte);
+            pagetabledump((pagetable_t)child, level + 1);
+        } else if (*pte & PTE_V) { // leaf
+            printf("    %sleaf:%p\n", buf, PTE2PA(*pte));
+        }
+    }
+}
+
 void freewalk(pagetable_t pagetable)
 {
     uint64 child;
@@ -139,6 +161,43 @@ uint64 uvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
     return newsz;
 }
 
+// Given a parent process's page table, copy
+// its memory into a child's page table.
+// Copies both the page table and the
+// physical memory.
+// returns 0 on success, -1 on failure.
+// frees any allocated pages on failure.
+int uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
+{
+    pte_t* pte;
+    uint64 pa, i;
+    uint flags;
+    char* mem;
+
+    for (i = 0; i < sz; i+= PGSIZE) {
+        if ((pte = walk(old, i, 0)) == 0) {
+            panic("uvmcopy:pte should exist");
+        }
+        if ((*pte & PTE_V) == 0) {
+            panic("uvmcopy: page not present");
+        }
+        pa = PTE2PA(*pte);
+        flags = PTE_FLAGS(*pte);
+        if ((mem = kalloc()) == 0) {
+            goto err;
+        }
+        memmove(mem, (char*)pa, PGSIZE);
+        if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0) {
+            kfree(mem);
+            goto err;
+        }
+    }
+    return 0;
+err:
+    uvmunmap(new, 0, i / PGSIZE, 1);
+    return -1;
+}
+
 int copyin(pagetable_t pagetable, char* dst, uint64 srcva, uint64 len)
 {
     uint64 n, va0, pa0;
@@ -159,6 +218,18 @@ int copyin(pagetable_t pagetable, char* dst, uint64 srcva, uint64 len)
         srcva = va0 + PGSIZE;
     }
     return 0;
+}
+
+// mark a PTE invalid for user access.
+// used by exec for the user stack guard page.
+void uvmclear(pagetable_t pagetable, uint64 va)
+{
+  pte_t *pte;
+  
+  pte = walk(pagetable, va, 0);
+  if(pte == 0)
+    panic("uvmclear");
+  *pte &= ~PTE_U;
 }
 
 int copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
@@ -198,6 +269,33 @@ int copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     }
 }
 
+// Copy from kernel to user.
+// Copy len bytes from src to virtual address dstva in a given page table.
+// Return 0 on success, -1 on error.
+int
+copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
+{
+    uint64 n, va0, pa0;
+
+    while(len > 0){
+        va0 = PGROUNDDOWN(dstva);
+        pa0 = walkaddr(pagetable, va0);
+        if(pa0 == 0) {
+            return -1;
+        }
+        n = PGSIZE - (dstva - va0);
+        if(n > len) {
+            n = len;
+        }   
+        memmove((void *)(pa0 + (dstva - va0)), src, n);
+
+        len -= n;
+        src += n;
+        dstva = va0 + PGSIZE;
+    }
+    return 0;
+}
+
 void proc_mapstacks(pagetable_t kpgtbl)
 {
     // alloc a empty page , and map to 
@@ -212,6 +310,12 @@ pagetable_t kvmmake()
 {
     // uart registers
     mappages(kernel_pagetable, UART0,  PGSIZE, UART0, PTE_R | PTE_W);
+
+    // virtio mmio disk interface
+    mappages(kernel_pagetable, VIRTIO0, PGSIZE, VIRTIO0, PTE_R | PTE_W);
+
+    // PLIC
+    mappages(kernel_pagetable, PLIC, 0x400000, PLIC, PTE_R | PTE_W);
 
     mappages(kernel_pagetable, KERNBASE, (uint64)etext - (uint64)KERNBASE, KERNBASE,PTE_R|PTE_X);
     mappages(kernel_pagetable, (uint64)etext, (uint64)PHYSTOP -(uint64)etext, (uint64)etext, PTE_R | PTE_W | PTE_X| PTE_V);

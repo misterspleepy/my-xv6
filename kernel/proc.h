@@ -1,7 +1,8 @@
 #ifndef _PROC_H_
 #define _PROC_H_
 #include "riscv.h"
-
+#include "spinlock.h"
+#include "file.h"
 struct context {
     uint64 ra;
     uint64 sp;
@@ -64,15 +65,19 @@ enum procstate {
     USED,
     RUNNING,
     RUNNABLE,
-    SPLEEPPING,
+    SLEEPING,
     ZOMBIE,
     UNUSED
 };
 
 struct proc {
     enum procstate status;
-    uint64 pid;
-    uint64 xstatus;
+    int pid;
+    int xstatus;
+    int killed;
+    struct proc *parent;
+    void *chan;
+    struct spinlock lock;
 
     // these are private to the process, so p->lock need not be held.
     uint64 kstack;               // Virtual address of kernel stack
@@ -80,12 +85,17 @@ struct proc {
     pagetable_t pagetable;       // User page table
     struct trapframe *trapframe; // data page for trampoline.S
     struct context context;      // swtch() here to run process
+    struct file *ofile[NOFILE];  // Open files
+    struct inode *cwd;           // Current directory
+    char name[16];               // Process name (debugging)
 };
 
 struct cpu {
     char stack[4 * 1024];
     struct context con;
     struct proc* proc;
+    int noff;
+    int intena;
 };
 
 /* switch from a to b*/
@@ -104,4 +114,13 @@ void userinit();
 void procinit();
 void scheduler();
 void exit(int);
+int growproc(int n);
+void wakeup(void* chan);
+int killed(struct proc* p);
+int kill(uint64 pid);
+int setkilled(struct proc* p);
+void sleep(void* chan, struct spinlock* lk);
+void wakeup(void* chan);
+int either_copyout(int user_dst, uint64 dst, void *src, uint64 len);
+int either_copyin(void *dst, int user_src, uint64 src, uint64 len);
 #endif

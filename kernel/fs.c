@@ -126,7 +126,7 @@ struct inode* iget(uint dev, uint in)
     struct inode* empty = 0;
     for (uint inum = 0; inum < NINODE; inum++) {
         ip = &itable.inode[inum];
-        if (ip->dev == dev && ip->inum == in) {
+        if (ip->ref > 0 && ip->dev == dev && ip->inum == in) {
             ip->ref++;
             return ip;
         }

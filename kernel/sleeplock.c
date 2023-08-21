@@ -27,6 +27,7 @@ void acquiresleep(struct sleeplock* lk)
             break;
         }
         sleep(lk, &lk->lock);
+        release(&lk->lock);
     }
 }
 

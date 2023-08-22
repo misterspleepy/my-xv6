@@ -132,24 +132,26 @@ void uvmfree(pagetable_t pagetable, uint64 sz)
 
 uint64 uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz, int xperm)
 {
-    uint64 pa;
-    if (PGROUNDUP(oldsz) == PGROUNDUP(newsz)) {
+    char *mem;
+    uint64 a;
+    if(newsz < oldsz) {
         return oldsz;
     }
     oldsz = PGROUNDUP(oldsz);
-    uint64 va = oldsz;
-    for (; va < PGROUNDUP(newsz); va += PGSIZE) {
-        pa = (uint64)kalloc();
-        if (!pa) {
-            break;
+    for(a = oldsz; a < newsz; a += PGSIZE) {
+        mem = kalloc();
+        if(mem == 0){
+            uvmdealloc(pagetable, a, oldsz);
+            return 0;
         }
-        if (mappages(pagetable, va, PGSIZE, pa, PTE_R | PTE_U | xperm)) {
-            kfree((void*)pa);
-            break;
+        memset(mem, 0, PGSIZE);
+        if(mappages(pagetable, a, PGSIZE, (uint64)mem, PTE_R|PTE_U|xperm) != 0){
+            kfree(mem);
+            uvmdealloc(pagetable, a, oldsz);
+            return 0;
         }
-        memset((void*)pa, 0, PGSIZE);
     }
-    return va;
+    return newsz;
 }
 
 uint64 uvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
@@ -157,7 +159,10 @@ uint64 uvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
     if (oldsz <= newsz) {
         return oldsz;
     }
-    uvmunmap(pagetable, PGROUNDUP(newsz), (PGROUNDUP(oldsz) - PGROUNDUP(newsz)) / PGSIZE, 1);
+    if(PGROUNDUP(newsz) < PGROUNDUP(oldsz)){
+        int npages = (PGROUNDUP(oldsz) - PGROUNDUP(newsz)) / PGSIZE;
+        uvmunmap(pagetable, PGROUNDUP(newsz), npages, 1);
+    }
     return newsz;
 }
 

@@ -120,21 +120,17 @@ void proc_freepagetable(pagetable_t pgtl, uint64 sz)
 
 int growproc(int n)
 {
-    struct proc* p;
-    int newsz;
-    if (n == 0) {
-        return 0;
-    }
-    p = myproc();
+    uint64 sz;
+    struct proc* p = myproc();
+    sz = p->sz;
     if (n > 0) {
-        newsz = uvmalloc(p->pagetable, p->sz, p->sz + n, PTE_W | PTE_R);
-        if (newsz == 0) {
+        if ((sz = uvmalloc(p->pagetable, sz, sz + n, PTE_W)) == 0) {
             return -1;
         }
-    } else {
-        newsz = uvmdealloc(p->pagetable, p->sz, p->sz + n);
+    } else if (n < 0) {
+        sz = uvmdealloc(p->pagetable, sz, sz + n);
     }
-    p->sz = newsz;
+    p->sz = sz;
     return 0;
 }
 void freeproc(struct proc* p);

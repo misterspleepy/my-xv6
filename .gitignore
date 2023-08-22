@@ -1,2 +1,10 @@
 .bash_history
 .vscode
+*.o
+*.d
+*.sym
+*.asm
+user/_*
+fs.img
+mkfs/mkfs
+kernel/kernel

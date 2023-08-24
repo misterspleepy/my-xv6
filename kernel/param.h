@@ -1,7 +1,7 @@
 #ifndef _PARAM_H_
 #define _PARAM_H_
 
-#define N_PROC 10
+#define N_PROC 300
 #define N_CPU 1
 #define NPIPE       100
 #define NOFILE       16  // open files per process

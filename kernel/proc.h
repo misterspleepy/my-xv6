@@ -117,7 +117,7 @@ void exit(int);
 int growproc(int n);
 void wakeup(void* chan);
 int killed(struct proc* p);
-int kill(uint64 pid);
+int kill(int pid);
 int setkilled(struct proc* p);
 void sleep(void* chan, struct spinlock* lk);
 void wakeup(void* chan);

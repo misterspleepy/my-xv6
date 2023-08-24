@@ -97,15 +97,18 @@ pagetable_t proc_pagetable(struct proc* proc)
 {
     // alloc a empty page
     pagetable_t ptl = (pagetable_t)kalloc();
+    if (ptl == 0) {
+        return 0;
+    }
     memset((char*)ptl, 0, PGSIZE);
     // map TRANPOLINE and TRAPFRAME
     if (mappages(ptl, TRAMPOLINE, PGSIZE, (uint64)trampoline, PTE_R | PTE_X)) {
-        kfree((void*)ptl);
+        uvmfree(ptl, 0);
         return 0;
     }
     if (mappages(ptl, TRAPFRAME, PGSIZE, (uint64)proc->trapframe, PTE_R | PTE_W | PTE_X)) {
         uvmunmap(ptl, TRAMPOLINE, 1, 0);
-        kfree((void*)ptl);
+        uvmfree(ptl, 0);
         return 0;
     }
     return ptl;
@@ -282,13 +285,15 @@ void freeproc(struct proc* p)
     if (p->pagetable) {
         proc_freepagetable(p->pagetable, p->sz);
     }
-    p->status = UNUSED;
-    p->xstatus = 0;
+    p->pagetable = 0;
     p->sz = 0;
     p->pid = 0;
-    p->pagetable = 0;
-    p->trapframe = 0;
+    p->parent = 0;
+    p->name[0] = 0;
+    p->chan = 0;
     p->killed = 0;
+    p->xstatus = 0;
+    p->status = UNUSED;
 }
 
 // Pass p's abandoned children to init.
@@ -350,7 +355,7 @@ int killed(struct proc* p)
     return p->killed;
 }
 
-int kill(uint64 pid)
+int kill(int pid)
 {
     struct proc* p;
     for (int i = 0; i < N_PROC; i++) {

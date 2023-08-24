@@ -565,12 +565,15 @@ uint64 sys_pipe()
 
 uint64 sys_kill()
 {
-  return -1;
+  int pid;
+
+  argint(0, &pid);
+  return kill(pid);
 }
 
 uint64 sys_getpid()
 {
-  return -1;
+  return myproc()->pid;
 }
 
 uint64 sys_uptime()

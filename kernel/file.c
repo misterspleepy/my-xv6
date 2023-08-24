@@ -100,9 +100,11 @@ int filewrite(struct file* f, uint64 addr, int n)
             if (n1 > max) {
                 n1 = max;
             }
+            ilock(f->ip);
             if ((r = writei(f->ip, 1, addr + i, f->off, n1)) > 0) {
                 f->off += r;
             }
+            iunlock(f->ip);
             if (r != n1) {
                 break;
             }

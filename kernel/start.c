@@ -24,7 +24,7 @@ void start()
     w_pmpcfg0(0xf);
     // timer init
     int id = r_mhartid();
-    int interval = 10000000;
+    int interval = 1000000;
     *(uint64*)CLINT_MTIMECMP(id) = *(uint64*)CLINT_MTIME + interval;
     uint64 *scratch = &timer_scratch[id][0];
     scratch[3] = CLINT_MTIMECMP(id);

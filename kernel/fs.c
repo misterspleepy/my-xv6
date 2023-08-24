@@ -309,6 +309,13 @@ int readi(struct inode* ip, int user_dst, uint64 dst, uint off, uint n)
     return tot;
 }
 
+// Write data to inode.
+// Caller must hold ip->lock.
+// If user_src==1, then src is a user virtual address;
+// otherwise, src is a kernel address.
+// Returns the number of bytes successfully written.
+// If the return value is less than the requested n,
+// there was an error of some kind.
 int writei(struct inode* ip, int user_src, uint64 src, uint off, uint n)
 {
     struct buf* bp;
@@ -328,7 +335,6 @@ int writei(struct inode* ip, int user_src, uint64 src, uint off, uint n)
         m = min(n - tot, BSIZE - off % BSIZE);
         if (either_copyin(bp->data + off % BSIZE, user_src, src, m) == -1) {
             brelse(bp);
-            tot = -1;
             break;
         }
         bwrite(bp);
@@ -390,7 +396,7 @@ int dirlink(struct inode *dp, char *name, uint inum)
             break;
         }
     }
-    safestrcpy(de.name, name, DIRSIZ);
+    strncpy(de.name, name, DIRSIZ);
     de.inum = inum;
     if (writei(dp, 0, (uint64)&de, off, sizeof(de)) != sizeof(de)) {
         return -1;
